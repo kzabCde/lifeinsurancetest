@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, ArrowRight, Bookmark, BookOpen, CheckCircle2, Flag, RotateCcw, XCircle } from 'lucide-react';
 import { applyAnswers, generateExam, scoreSession } from '@/services/exam-engine';
-import { realExamSetQuestions, examSetsMeta } from '@/data/real-exam-sets';
+import { getQuestionsForSet, examSetsMeta } from '@/data/real-exam-sets';
 import { questionBank } from '@/data/question-bank';
 import type { AnswerRecord, ExamSession, Question, UserProgress } from '@/types';
 
@@ -25,9 +25,8 @@ export function ExamRunner({
 }) {
   const questions = useMemo(() => {
     if (mode === 'set' && setId) {
-      const real = realExamSetQuestions[setId];
-      if (real && real.length > 0) return real;
-      // For sets without full questions, generate from question bank
+      const setQuestions = getQuestionsForSet(setId);
+      if (setQuestions.length > 0) return setQuestions;
       return generateExam('practice', progress);
     }
     return generateExam(mode, progress);

@@ -136,6 +136,10 @@ function q(
   };
 }
 
+export function getQuestionsForSet(setId: string): Question[] {
+  return realExamSetQuestions[setId] ?? [];
+}
+
 export const realExamSetQuestions: Record<string, Question[]> = {
   real_exam: [
     q('real_exam-1', 1,
