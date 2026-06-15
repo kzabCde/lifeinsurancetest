@@ -1,9 +1,92 @@
+import { licensingExamBlueprint } from '@/data/exam-blueprint';
 import { questionBank } from '@/data/question-bank';
 import { percent, shuffle } from '@/lib/utils';
 import type { Analytics, AnswerRecord, ExamSession, Question, UserProgress } from '@/types';
-const dist={easy:.3,medium:.4,hard:.2,expert:.1};
-function takeBalanced(pool:Question[], count:number, seed:number){ const byTopic=shuffle([...new Set(pool.map(q=>q.topic))],seed); const out:Question[]=[]; for(const d of Object.keys(dist) as Question['difficulty'][]){ const target=Math.round(count*dist[d]); const candidates=shuffle(pool.filter(q=>q.difficulty===d),seed+target); let idx=0; while(out.filter(q=>q.difficulty===d).length<target && idx<candidates.length){ const topic=byTopic[(out.length+idx)%byTopic.length]; const q=candidates.find(c=>c.topic===topic && !out.some(o=>o.id===c.id)) ?? candidates[idx]; if(q&&!out.some(o=>o.id===q.id)) out.push(q); idx++; }} return shuffle([...out, ...shuffle(pool.filter(q=>!out.some(o=>o.id===q.id)),seed).slice(0, Math.max(0,count-out.length))], seed).slice(0,count); }
-export function generateExam(mode:ExamSession['mode'], progress:UserProgress):Question[]{ const seed=Date.now(); let pool=questionBank; if(mode==='mock') return [...takeBalanced(questionBank.filter(q=>q.category==='จรรยาบรรณ'),20,seed),...takeBalanced(questionBank.filter(q=>q.category==='ความรู้ประกันชีวิต'),40,seed+1)]; if(mode==='wrong') pool=questionBank.filter(q=>progress.wrongQuestionIds.includes(q.id)); if(mode==='bookmarked') pool=questionBank.filter(q=>progress.bookmarks.includes(q.id)); if(mode==='weak'){ const weak=Object.entries(progress.topicStats).filter(([,s])=>percent(s.correct,s.attempts)<70).map(([t])=>t); pool=weak.length?questionBank.filter(q=>weak.includes(q.topic)):questionBank; } return takeBalanced(pool.length?pool:questionBank, Math.min(20,pool.length||20), seed); }
-export function scoreSession(session:ExamSession, questions:Question[]){ const ethics=session.answers.filter(a=>questions.find(q=>q.id===a.questionId)?.category==='จรรยาบรรณ'&&a.correct).length; const knowledge=session.answers.filter(a=>questions.find(q=>q.id===a.questionId)?.category==='ความรู้ประกันชีวิต'&&a.correct).length; return {ethics, knowledge, passed: ethics>=14 && knowledge>=24, total: session.answers.filter(a=>a.correct).length}; }
-export function applyAnswers(progress:UserProgress, session:ExamSession, answers:AnswerRecord[]):UserProgress{ const next=structuredClone(progress); session.answers=answers; next.sessions.unshift(session); for(const a of answers){ const q=questionBank.find(x=>x.id===a.questionId); if(!q) continue; for(const key of [q.topic,q.category,q.difficulty]){ const bucket = key===q.difficulty ? next.difficultyStats[q.difficulty] : key===q.category ? (next.categoryStats[key]??={attempts:0,correct:0}) : (next.topicStats[key]??={attempts:0,correct:0}); bucket.attempts++; if(a.correct) bucket.correct++; } if(!a.correct){ if(!next.wrongQuestionIds.includes(q.id)) next.wrongQuestionIds.push(q.id); const old=next.reviewQueue[q.id]?.misses??0; next.reviewQueue[q.id]={misses:old+1,dueAt:Date.now()+Math.max(0,10-old*5)*60000}; next.streak=0; } else next.streak++; } const correct=answers.filter(a=>a.correct).length; if(next.sessions.length===1) next.achievements.push('สอบครั้งแรกสำเร็จ'); if(next.streak>=10) next.achievements.push('ตอบถูกต่อเนื่อง 10 ข้อ'); if(correct/answers.length>=.9) next.achievements.push('ชมรมความแม่นยำ 90%'); return next; }
-export function analytics(p:UserProgress):Analytics{ const acc=(s?:{attempts:number;correct:number})=>percent(s?.correct??0,s?.attempts??0); const topicAcc=Object.entries(p.topicStats).map(([t,s])=>[t,acc(s)] as const).sort((a,b)=>a[1]-b[1]); const avg=p.sessions.length?Math.round(p.sessions.reduce((sum,s)=>sum+percent(s.answers.filter(a=>a.correct).length,s.answers.length),0)/p.sessions.length):0; const readiness=Math.round((avg+acc(p.categoryStats['จรรยาบรรณ'])+acc(p.categoryStats['ความรู้ประกันชีวิต']))/3)||0; const weakest=topicAcc.slice(0,5).map(([t])=>t); return {readiness, passProbability:Math.min(98,Math.max(5,readiness+10)), averageScore:avg, ethicsAccuracy:acc(p.categoryStats['จรรยาบรรณ']), knowledgeAccuracy:acc(p.categoryStats['ความรู้ประกันชีวิต']), weakestTopics:weakest, strongestTopics:[...topicAcc].reverse().slice(0,3).map(([t])=>t), recommendations:weakest.map(t=>`ทบทวนหัวข้อ${t} และทำแบบฝึกหัดซ้ำจากข้อที่เคยตอบผิด`)}; }
+
+const difficultyDistribution = licensingExamBlueprint.difficultyDistribution;
+
+function takeBalanced(pool: Question[], count: number, seed: number) {
+  const out: Question[] = [];
+  for (const difficulty of Object.keys(difficultyDistribution) as Question['difficulty'][]) {
+    const target = Math.round(count * difficultyDistribution[difficulty]);
+    const candidates = shuffle(pool.filter((question) => question.difficulty === difficulty), seed + target);
+    for (const candidate of candidates) {
+      if (out.filter((question) => question.difficulty === difficulty).length >= target) break;
+      if (!out.some((question) => question.id === candidate.id || question.question === candidate.question)) out.push(candidate);
+    }
+  }
+  return shuffle([...out, ...shuffle(pool.filter((question) => !out.some((selected) => selected.id === question.id)), seed).slice(0, Math.max(0, count - out.length))], seed).slice(0, count);
+}
+
+function takeByTopicDistribution(category: Question['category'], topicDistribution: Record<string, number>, seed: number) {
+  const selected: Question[] = [];
+  for (const [topic, count] of Object.entries(topicDistribution)) {
+    const topicPool = questionBank.filter((question) => question.category === category && (question.topic === topic || question.subtopic === topic));
+    selected.push(...takeBalanced(topicPool.length ? topicPool : questionBank.filter((question) => question.category === category), count, seed + selected.length));
+  }
+  return selected;
+}
+
+export function generateExam(mode: ExamSession['mode'], progress: UserProgress): Question[] {
+  const seed = Date.now();
+  let pool = questionBank;
+  if (mode === 'mock') return licensingExamBlueprint.parts.flatMap((part, index) => takeByTopicDistribution(part.category, part.topicDistribution, seed + index));
+  if (mode === 'wrong') pool = questionBank.filter((question) => progress.wrongQuestionIds.includes(question.id));
+  if (mode === 'bookmarked') pool = questionBank.filter((question) => progress.bookmarks.includes(question.id));
+  if (mode === 'weak') {
+    const weak = Object.entries(progress.topicStats).filter(([, stat]) => percent(stat.correct, stat.attempts) < 70).map(([topic]) => topic);
+    pool = weak.length ? questionBank.filter((question) => weak.includes(question.topic) || weak.includes(question.subtopic)) : questionBank;
+  }
+  return takeBalanced(pool.length ? pool : questionBank, Math.min(20, pool.length || 20), seed);
+}
+
+export function scoreSession(session: ExamSession, questions: Question[]) {
+  const ethics = session.answers.filter((answer) => questions.find((question) => question.id === answer.questionId)?.category === 'จรรยาบรรณและศีลธรรม' && answer.correct).length;
+  const knowledge = session.answers.filter((answer) => questions.find((question) => question.id === answer.questionId)?.category === 'ความรู้ประกันชีวิต' && answer.correct).length;
+  return { ethics, knowledge, passed: ethics >= 14 && knowledge >= 24, total: session.answers.filter((answer) => answer.correct).length };
+}
+
+export function applyAnswers(progress: UserProgress, session: ExamSession, answers: AnswerRecord[]): UserProgress {
+  const next = structuredClone(progress);
+  session.answers = answers;
+  next.sessions.unshift(session);
+  for (const answer of answers) {
+    const question = questionBank.find((item) => item.id === answer.questionId);
+    if (!question) continue;
+    for (const key of [question.topic, question.category, question.difficulty]) {
+      const bucket = key === question.difficulty ? next.difficultyStats[question.difficulty] : key === question.category ? (next.categoryStats[key] ??= { attempts: 0, correct: 0 }) : (next.topicStats[key] ??= { attempts: 0, correct: 0 });
+      bucket.attempts++;
+      if (answer.correct) bucket.correct++;
+    }
+    if (!answer.correct) {
+      if (!next.wrongQuestionIds.includes(question.id)) next.wrongQuestionIds.push(question.id);
+      const old = next.reviewQueue[question.id]?.misses ?? 0;
+      const repeatAfterQuestions = old >= 2 ? 0 : old === 1 ? 5 : 10;
+      next.reviewQueue[question.id] = { misses: old + 1, dueAt: Date.now() + repeatAfterQuestions * 60_000, lastSeenAt: answer.answeredAt };
+      next.streak = 0;
+    } else next.streak++;
+  }
+  const correct = answers.filter((answer) => answer.correct).length;
+  if (next.sessions.length === 1) next.achievements.push('ทำข้อสอบครั้งแรก');
+  if (next.streak >= 10) next.achievements.push('ตอบถูกติดกัน 10 ข้อ');
+  if (correct / answers.length >= 0.9) next.achievements.push('คะแนนเกิน 90%');
+  return next;
+}
+
+export function analytics(progress: UserProgress): Analytics {
+  const accuracy = (stat?: { attempts: number; correct: number }) => percent(stat?.correct ?? 0, stat?.attempts ?? 0);
+  const topicAccuracy = Object.entries(progress.topicStats).map(([topic, stat]) => [topic, accuracy(stat)] as const).sort((a, b) => a[1] - b[1]);
+  const averageScore = progress.sessions.length ? Math.round(progress.sessions.reduce((sum, session) => sum + percent(session.answers.filter((answer) => answer.correct).length, session.answers.length), 0) / progress.sessions.length) : 0;
+  const readiness = Math.round((averageScore + accuracy(progress.categoryStats['จรรยาบรรณและศีลธรรม']) + accuracy(progress.categoryStats['ความรู้ประกันชีวิต'])) / 3) || 0;
+  const weakestTopics = topicAccuracy.slice(0, 5).map(([topic]) => topic);
+  return {
+    readiness,
+    passProbability: Math.min(98, Math.max(5, readiness + 10)),
+    averageScore,
+    ethicsAccuracy: accuracy(progress.categoryStats['จรรยาบรรณและศีลธรรม']),
+    knowledgeAccuracy: accuracy(progress.categoryStats['ความรู้ประกันชีวิต']),
+    weakestTopics,
+    strongestTopics: [...topicAccuracy].reverse().slice(0, 3).map(([topic]) => topic),
+    recommendations: weakestTopics.map((topic) => `คุณควรทบทวนหัวข้อ${topic} และทำแบบฝึกหัดจากข้อที่เคยตอบผิด`),
+  };
+}
