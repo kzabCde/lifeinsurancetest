@@ -1,5 +1,5 @@
 import { licensingExamBlueprint } from '@/data/exam-blueprint';
-import { questionBank } from '@/data/question-bank';
+import { questionBank } from '@/data/all-questions';
 import { percent, shuffle } from '@/lib/utils';
 import type { Analytics, AnswerRecord, ExamSession, Question, UserProgress } from '@/types';
 
